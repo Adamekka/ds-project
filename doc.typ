@@ -338,3 +338,129 @@ Tabulka `AssetProjectUsage` popisuje použití assetů v konkrétních projektec
   [`added_at`], [date], [ano], [Datum přidání assetu do projektu.],
   [`is_active`], [boolean], [ano], [Indikace, zda je použití assetu v projektu stále aktivní.],
 )
+
+= Minispecifikace netriviální funkce
+
+== Vybraná transakce
+
+Pro detailní minispecifikaci je zvolena funkce `T1 F6 AddAssetVersion`. Tato funkce je reálnou transakcí informačního systému, protože při schválení nové verze neprovádí pouze obyčejný insert do tabulky `AssetVersion`, ale zároveň musí změnit stav ostatních verzí stejného assetu. Všechny kroky musí proběhnout buď celé, nebo vůbec, aby v systému nevznikl nekonzistentní stav se dvěma současně schválenými verzemi téhož assetu.
+
+== Cíle transakce
+
+1. ověřit, že cílový asset existuje a lze k němu přidat novou verzi,
+2. ověřit, že číslo verze není pro daný asset duplicitní,
+3. při schválení nové verze odebrat schválení všem ostatním verzím stejného assetu,
+4. vložit novou verzi assetu se zadanými metadaty,
+5. zachovat konzistentní stav, ve kterém má asset po dokončení transakce nejvýše jednu schválenou verzi.
+
+== Vstupy a výstupy
+
+- Vstupy: `p_asset_version_id`, `p_asset_id`, `p_version_number`, `p_file_path`, `p_created_at`, `p_changelog`, `p_is_approved`.
+- Výstup: logická hodnota `true` při úspěšném vložení nové verze, jinak `false`.
+
+== Minispecifikace krok za krokem
+
+1. `start transaction;`
+2. Načti cílový asset podle `p_asset_id` a uzamkni jej proti souběžné změně.
+
+```sql
+select a.asset_id
+into v_asset_id
+from Asset a
+where a.asset_id = p_asset_id
+for update;
+```
+
+3. Ověř, že nová verze obsahuje povinné údaje a že číslo verze ještě pro daný asset neexistuje. Při neúspěchu proveď `rollback` a vrať `false`.
+
+```sql
+if p_file_path is null or p_version_number is null or p_version_number <= 0 then
+  rollback;
+  return false;
+end if;
+
+select count(*)
+into v_version_exists
+from AssetVersion av
+where av.asset_id = p_asset_id
+  and av.version_number = p_version_number;
+
+if v_version_exists > 0 then
+  rollback;
+  return false;
+end if;
+```
+
+4. Pokud má být nová verze schválená, načti a uzamkni existující schválené verze stejného assetu.
+
+```sql
+if p_is_approved = 1 then
+  for r in (
+    select av.asset_version_id
+    from AssetVersion av
+    where av.asset_id = p_asset_id
+      and av.is_approved = 1
+    for update
+  ) loop
+    null;
+  end loop;
+end if;
+```
+
+5. Pokud `p_is_approved = 1`, odeber schválení všem ostatním verzím stejného assetu.
+
+```sql
+if p_is_approved = 1 then
+  update AssetVersion
+  set is_approved = 0
+  where asset_id = p_asset_id
+    and is_approved = 1;
+end if;
+```
+
+6. Vlož novou verzi do tabulky `AssetVersion`.
+
+```sql
+insert into AssetVersion(
+  asset_version_id,
+  asset_id,
+  version_number,
+  file_path,
+  created_at,
+  changelog,
+  is_approved
+) values (
+  p_asset_version_id,
+  p_asset_id,
+  p_version_number,
+  p_file_path,
+  p_created_at,
+  p_changelog,
+  p_is_approved
+);
+```
+
+7. Ověř výsledný stav schválení. Asset nesmí mít po dokončení transakce více než jednu schválenou verzi. Při porušení podmínky proveď `rollback` a vrať `false`.
+
+```sql
+select count(*)
+into v_approved_count
+from AssetVersion av
+where av.asset_id = p_asset_id
+  and av.is_approved = 1;
+
+if v_approved_count > 1 then
+  rollback;
+  return false;
+end if;
+```
+
+8. `commit; return true;`
+9. Při jakékoliv chybě proveď `rollback; return false;`.
+
+== Poznámky k transakci
+
+- Transakce vyžaduje izolaci mezi načtením existujících verzí a jejich aktualizací. Proto je v minispecifikaci použito `for update`, aby dva uživatelé nemohli souběžně schválit dvě různé verze téhož assetu.
+- Nestačí pouze zobrazit stav schválení ve formuláři. Mezi načtením detailu assetu a uložením nové verze může jiná transakce schválit jinou verzi.
+- Funkce `AddAssetVersion` není triviální CRUD operace. Jde o transakční scénář, který pracuje s více řádky téže entity a zachovává invariant databáze.
+- Pokud je nová verze vložena s `p_is_approved = 0`, transakce pouze přidá další verzi a ponechá dosavadní schválenou verzi beze změny.
