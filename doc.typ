@@ -464,3 +464,9 @@ end if;
 - Nestačí pouze zobrazit stav schválení ve formuláři. Mezi načtením detailu assetu a uložením nové verze může jiná transakce schválit jinou verzi.
 - Funkce `AddAssetVersion` není triviální CRUD operace. Jde o transakční scénář, který pracuje s více řádky téže entity a zachovává invariant databáze.
 - Pokud je nová verze vložena s `p_is_approved = 0`, transakce pouze přidá další verzi a ponechá dosavadní schválenou verzi beze změny.
+
+= Závěr
+
+Navržený formulář pro správu assetů splňuje požadavky na funkční analýzu i detailní popis netriviální funkce. Pracuje s více tabulkami a vazbami, pokrývá běžné čtecí i zapisovací operace nad assety, verzemi a jejich použitím v projektech a obsahuje deset funkcí datové vrstvy vyvolávaných z navrženého rozhraní.
+
+Jádrem návrhu je transakce `AddAssetVersion`, která jednoznačně ukazuje potřebu atomického zpracování a izolace při práci s databází. Zvolené řešení tak odpovídá reálnému informačnímu systému pro herní vývoj a současně zůstává dostatečně malé a přehledné pro semestrální projekt.
