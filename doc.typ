@@ -28,40 +28,45 @@ U každého assetu se evidují základní informace, hlavní autor, licence, for
 
 = Formulář
 
-Hlavní obrazovka aplikace vychází stejnou logikou z referenčního DS II dokumentu: vlevo je vyhledání a detail záznamu, pod ním formulář pro vložení nebo úpravu a v samostatném panelu se provádějí související akce nad verzemi a použitím assetu v projektech.
-
 #figure(
   image("assets/form-annotated.png", width: 100%),
-  caption: [Vygenerovaný návrh hlavní obrazovky systému správy assetů.],
+  caption: [Návrh hlavní obrazovky systému správy assetů.],
+)
+
+#figure(
+  image("assets/add-version-annotated.png", width: 55%),
+  caption: [Návrh formuláře pro přidání nové verze assetu.],
 )
 
 #table(
   columns: (auto, 3fr),
   [*Část formuláře*], [*Účel*],
-  [Vyhledat asset], [Vyhledání assetu podle identifikátoru nebo názvu a načtení jeho detailu.],
+  [Vyhledat asset], [Vyhledání assetu podle identifikátoru, názvu nebo typu a načtení jeho detailu.],
   [Informace o assetu], [Zobrazení názvu assetu, typu, autora, licence, formátu, velikosti, aktivity a popisu.],
   [Zobrazit verze], [Přehled všech verzí vybraného assetu včetně informace, která verze je schválená.],
   [Zobrazit projekty], [Seznam projektů, ve kterých je asset právě používán, včetně role použití.],
   [Přidat / upravit asset], [Formulář pro vložení nového assetu nebo úpravu jeho základních údajů.],
   [Přidat verzi], [Vložení nové verze assetu včetně cesty k souboru, changelogu a příznaku schválení.],
   [Přiřadit do projektu], [Zapsání použití assetu do konkrétního projektu s určením role a aktivního stavu.],
+  [Filtry], [Volitelné filtrování assetů podle typu, komerční licence, aktivity a existence schválené verze.],
   [Statistiky], [Přehled nejčastěji používaných assetů v projektech.],
 )
 
 = Seznam funkcí
 
-== CRUD F1 `GetAuthor(p_author_id)`
+== CRUD F1 `GetAssetTypes()`
 
-Funkce vrátí jméno autora. Vstupním parametrem je identifikátor autora, podle kterého vrátí výsledek.
+Funkce vrátí seznam všech typů assetů pro naplnění rozbalovacího seznamu `Typ assetu` v panelu `Filtry`. Ve formuláři je volána při načtení hlavní obrazovky. Prezentační položka `Všechny typy` se doplňuje na úrovni formuláře a při filtrování odpovídá hodnotě `NULL`.
 
 ```sql
-select name from Author
-where author_id = p_author_id
+select asset_type_id, name
+from AssetType
+order by name
 ```
 
-== CRUD F2 `GetAsset(p_asset_id)`
+== CRUD F2 `GetAsset(p_asset_id, p_name, p_asset_type_id)`
 
-Funkce vrátí všechny informace o assetu (název, typ, hlavní autor, licence, formát, velikost, aktivní stav, popis). Jako parametr musí být poskytnut jednoznačný identifikátor assetu.
+Funkce vrátí všechny informace o assetu (název, typ, hlavní autor, licence, formát, velikost, aktivní stav, popis). Asset lze ve formuláři dohledat podle identifikátoru, názvu nebo typu, přičemž alespoň jeden z vyhledávacích parametrů musí být vyplněn.
 
 Funkce také zjistí, která schválená verze je pro daný asset aktuálně k dispozici.
 
@@ -69,33 +74,41 @@ Funkce také zjistí, která schválená verze je pro daný asset aktuálně k d
 select a.asset_id, a.name, at.name as asset_type, au.name as author_name,
        l.name as license_name, a.file_format, a.size_mb, a.created_at,
        a.is_active, a.description
+into v_selected_asset_id, v_name, v_asset_type, v_author_name,
+     v_license_name, v_file_format, v_size_mb, v_created_at,
+     v_is_active, v_description
 from Asset a
 join AssetType at on at.asset_type_id = a.asset_type_id
 join Author au on au.author_id = a.main_author_id
 join License l on l.license_id = a.license_id
-where a.asset_id = p_asset_id
+where (p_asset_id is null or a.asset_id = p_asset_id)
+  and (p_name is null or lower(a.name) like lower('%' || p_name || '%'))
+  and (p_asset_type_id is null or a.asset_type_id = p_asset_type_id)
+fetch first 1 row only;
 
 select max(version_number) from AssetVersion
-where asset_id = p_asset_id
+where asset_id = v_selected_asset_id
   and is_approved = TRUE
 ```
 
 == F3 `GetAssetVersions(p_asset_id)`
 
-Funkce vrátí všechny verze spojené s assetem s identifikátorem `p_asset_id`.
+Funkce vrátí všechny verze spojené s assetem s identifikátorem `p_asset_id`. Ve formuláři je volána až nad již načteným detailem vybraného assetu.
 
 ```sql
-select * from AssetVersion
+select *
+from AssetVersion
 where asset_id = p_asset_id
 order by version_number desc
 ```
 
 == F4 `GetAssetProjects(p_asset_id)`
 
-Funkce vrátí všechny projekty, ve kterých je zadaný asset použit.
+Funkce vrátí všechny projekty, ve kterých je použit asset s identifikátorem `p_asset_id`. Ve formuláři je volána až nad již načteným detailem vybraného assetu.
 
 ```sql
-select * from AssetProjectUsage apu
+select *
+from AssetProjectUsage apu
 join Project p on p.project_id = apu.project_id
 where apu.asset_id = p_asset_id
 ```
@@ -105,15 +118,59 @@ where apu.asset_id = p_asset_id
 Transakce vloží nový asset do tabulky `Asset`. Před vložením ověřuje, že zadaný typ assetu, hlavní autor a licence v systému existují. Po úspěšném vložení je asset připraven k dalšímu verzování a přiřazení do projektů.
 
 ```sql
-insert into Asset(asset_id, name, asset_type_id, main_author_id, license_id,
-                  file_format, size_mb, created_at, is_active, description)
-values(p_asset_id, p_name, p_asset_type_id, p_main_author_id, p_license_id,
-       p_file_format, p_size_mb, p_created_at, p_is_active, p_description)
+create or replace procedure AddAsset(
+  p_asset_id integer,
+  p_name varchar2,
+  p_asset_type_id integer,
+  p_main_author_id integer,
+  p_license_id integer,
+  p_file_format varchar2,
+  p_size_mb number,
+  p_created_at date,
+  p_is_active number,
+  p_description varchar2
+) is
+  v_asset_type_id AssetType.asset_type_id%type;
+  v_author_id Author.author_id%type;
+  v_license_ref License.license_id%type;
+begin
+  select asset_type_id
+  into v_asset_type_id
+  from AssetType
+  where asset_type_id = p_asset_type_id;
+
+  select author_id
+  into v_author_id
+  from Author
+  where author_id = p_main_author_id;
+
+  select license_id
+  into v_license_ref
+  from License
+  where license_id = p_license_id;
+
+  insert into Asset(
+    asset_id, name, asset_type_id, main_author_id, license_id,
+    file_format, size_mb, created_at, is_active, description
+  )
+  values (
+    p_asset_id, p_name, p_asset_type_id, p_main_author_id, p_license_id,
+    p_file_format, p_size_mb, p_created_at, p_is_active, p_description
+  );
+
+  commit;
+exception
+  when NO_DATA_FOUND then
+    dbms_output.put_line('Asset type, author or license does not exist.');
+    rollback;
+end;
 ```
 
 == T1 F6 `AddAssetVersion(p_asset_version_id, p_asset_id, p_version_number, p_file_path, p_created_at, p_changelog, p_is_approved)`
 
 Transakce vloží záznam do tabulky `AssetVersion`. Pokud je nová verze označena jako schválená, všechny ostatní verze stejného assetu se automaticky nastaví jako neschválené, aby byla v systému vždy právě jedna schválená verze.
+
+Parametr `p_asset_id` je ve formuláři `Přidat verzi` vybírán z rozbalovacího seznamu naplněného funkcí `F11 GetAssets`.
 
 ```sql
 create or replace procedure AddAssetVersion(
@@ -193,16 +250,23 @@ set name = p_name,
 where asset_id = p_asset_id
 ```
 
-== CRUD F9 `FindAssets(p_asset_type_id, p_is_commercial)`
+== CRUD F9 `FindAssets(p_asset_type_id, p_only_commercial, p_only_active, p_only_approved)`
 
-Funkce vrátí seznam aktivních assetů, které odpovídají zadanému typu a zvolenému licenčnímu omezení.
+Funkce vrátí seznam assetů odpovídající filtrům zvoleným v panelu `Filtry`. Všechny čtyři parametry jsou volitelné a odpovídají přímo prvkům formuláře: výběru typu assetu načtenému funkcí `F1 GetAssetTypes` (`Všechny typy` = `NULL`) a třem zaškrtávacím polím `Pouze komerční licence`, `Pouze aktivní assety` a `Pouze schválené verze`. Pokud je zapnut filtr schválených verzí, funkce vrací pouze assety, které mají alespoň jednu schválenou verzi v tabulce `AssetVersion`.
 
 ```sql
-select a.* from Asset a
+select a.*
+from Asset a
 join License l on l.license_id = a.license_id
-where a.asset_type_id = p_asset_type_id
-  and a.is_active = TRUE
-  and l.is_commercial = p_is_commercial
+where (p_asset_type_id is null or a.asset_type_id = p_asset_type_id)
+  and (p_only_commercial = 0 or l.is_commercial = TRUE)
+  and (p_only_active = 0 or a.is_active = TRUE)
+  and (p_only_approved = 0 or exists (
+    select 1
+    from AssetVersion av
+    where av.asset_id = a.asset_id
+      and av.is_approved = TRUE
+  ))
 ```
 
 == F10 `GetStats()`
@@ -217,6 +281,16 @@ where apu.is_active = TRUE
 group by a.asset_id, a.name
 order by usage_count desc
 fetch first 10 rows only
+```
+
+== CRUD F11 `GetAssets()`
+
+Funkce vrátí seznam existujících assetů pro naplnění rozbalovacího seznamu `Asset` ve formuláři `Přidat verzi`. Ve formuláři je volána při otevření modalu a vrací pouze identifikátor a název assetu potřebný pro výběr hodnoty `p_asset_id`.
+
+```sql
+select asset_id, name
+from Asset
+order by name
 ```
 
 = Popis tabulek databáze
