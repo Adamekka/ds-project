@@ -465,23 +465,7 @@ if v_version_exists > 0 then
 end if;
 ```
 
-4. Pokud má být nová verze schválená, načti a uzamkni existující schválené verze stejného assetu.
-
-```sql
-if p_is_approved = 1 then
-  for r in (
-    select av.asset_version_id
-    from AssetVersion av
-    where av.asset_id = p_asset_id
-      and av.is_approved = 1
-    for update
-  ) loop
-    null;
-  end loop;
-end if;
-```
-
-5. Pokud `p_is_approved = 1`, odeber schválení všem ostatním verzím stejného assetu.
+4. Pokud `p_is_approved = 1`, odeber schválení všem ostatním verzím stejného assetu.
 
 ```sql
 if p_is_approved = 1 then
@@ -492,7 +476,7 @@ if p_is_approved = 1 then
 end if;
 ```
 
-6. Vlož novou verzi do tabulky `AssetVersion`.
+5. Vlož novou verzi do tabulky `AssetVersion`.
 
 ```sql
 insert into AssetVersion(
@@ -514,33 +498,18 @@ insert into AssetVersion(
 );
 ```
 
-7. Ověř výsledný stav schválení. Asset nesmí mít po dokončení transakce více než jednu schválenou verzi. Při porušení podmínky proveď `rollback` a vrať `false`.
-
-```sql
-select count(*)
-into v_approved_count
-from AssetVersion av
-where av.asset_id = p_asset_id
-  and av.is_approved = 1;
-
-if v_approved_count > 1 then
-  rollback;
-  return false;
-end if;
-```
-
-8. `commit; return true;`
-9. Při jakékoliv chybě proveď `rollback; return false;`.
+6. `commit; return true;`
+7. Při jakékoliv chybě proveď `rollback; return false;`.
 
 == Poznámky k transakci
 
-- Transakce vyžaduje izolaci mezi načtením existujících verzí a jejich aktualizací. Proto je v minispecifikaci použito `for update`, aby dva uživatelé nemohli souběžně schválit dvě různé verze téhož assetu.
+- Transakce se serializuje už v kroku 2 zamčením cílového řádku v tabulce `Asset`. Díky tomu není potřeba samostatně uzamykat schválené verze ani po vložení znovu kontrolovat jejich počet.
 - Nestačí pouze zobrazit stav schválení ve formuláři. Mezi načtením detailu assetu a uložením nové verze může jiná transakce schválit jinou verzi.
 - Funkce `AddAssetVersion` není triviální CRUD operace. Jde o transakční scénář, který pracuje s více řádky téže entity a zachovává invariant databáze.
 - Pokud je nová verze vložena s `p_is_approved = 0`, transakce pouze přidá další verzi a ponechá dosavadní schválenou verzi beze změny.
 
 = Závěr
 
-Navržený formulář pro správu assetů splňuje požadavky na funkční analýzu i detailní popis netriviální funkce. Pracuje s více tabulkami a vazbami, pokrývá běžné čtecí i zapisovací operace nad assety, verzemi a jejich použitím v projektech a obsahuje deset funkcí datové vrstvy vyvolávaných z navrženého rozhraní.
+Navržený formulář pro správu assetů splňuje požadavky na funkční analýzu i detailní popis netriviální funkce. Pracuje s více tabulkami a vazbami, pokrývá běžné čtecí i zapisovací operace nad assety, verzemi a jejich použitím v projektech a obsahuje jedenáct funkcí datové vrstvy vyvolávaných z navrženého rozhraní.
 
 Jádrem návrhu je transakce `AddAssetVersion`, která jednoznačně ukazuje potřebu atomického zpracování a izolace při práci s databází. Zvolené řešení tak odpovídá reálnému informačnímu systému pro herní vývoj a současně zůstává dostatečně malé a přehledné pro semestrální projekt.
