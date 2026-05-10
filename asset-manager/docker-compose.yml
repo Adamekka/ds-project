@@ -1,0 +1,21 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    platform: linux/amd64
+    container_name: asset-manager-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "AssetManager123!"
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x sqlservr > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  sqlserver-data:
